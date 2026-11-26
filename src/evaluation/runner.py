@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from src.evaluation.metrics import exact_match, pass_at_k
+from src.rewards.math import extract_final_answer, extract_numeric_answer
 
 
 class Generator(Protocol):
@@ -19,10 +20,16 @@ class Generator(Protocol):
 
 def evaluate_jsonl(generator: Generator, dataset_path: str, output_path: str,
                    max_new_tokens: int = 2048, samples_per_prompt: int = 1,
-                   pass_k: list[int] | None = None) -> dict[str, float]:
+                   pass_k: list[int] | None = None,
+                   metric: str = "exact") -> dict[str, float]:
     """Evaluate sampled completions per record and write per-example predictions."""
     rows = [json.loads(line) for line in Path(dataset_path).read_text(encoding="utf-8").splitlines()
             if line.strip()]
+    rows = [row for row in rows if row.get("reference") not in (None, "")]
+    if not rows:
+        raise ValueError(f"Evaluation split contains no rows with references: {dataset_path}")
+    if metric not in {"exact", "math"}:
+        raise ValueError("metric must be 'exact' or 'math'")
     prompts = [row["prompt"] for row in rows]
     if samples_per_prompt <= 0:
         raise ValueError("samples_per_prompt must be positive")
@@ -33,15 +40,28 @@ def evaluate_jsonl(generator: Generator, dataset_path: str, output_path: str,
             raise ValueError("Generator returned a different number of completions than prompts")
         for index, prediction in enumerate(predictions):
             samples[index].append(prediction)
-    outcomes = [[bool(exact_match(prediction, str(row.get("reference", ""))))
+    def score(prediction: str, reference: str) -> float:
+        if metric == "exact":
+            return exact_match(prediction, reference)
+        predicted_text = extract_final_answer(prediction).strip().strip("$").replace(" ", "")
+        reference_text = extract_final_answer(reference).strip().strip("$").replace(" ", "")
+        predicted_number = extract_numeric_answer(predicted_text)
+        reference_number = extract_numeric_answer(reference_text)
+        if predicted_number is not None and reference_number is not None:
+            import math
+            return float(math.isclose(predicted_number, reference_number,
+                                      rel_tol=1e-6, abs_tol=1e-6))
+        return exact_match(predicted_text, reference_text)
+
+    outcomes = [[bool(score(prediction, str(row.get("reference", ""))))
                  for prediction in predictions] for row, predictions in zip(rows, samples, strict=True)]
-    scores = [exact_match(predictions[0], str(row.get("reference", "")))
+    scores = [score(predictions[0], str(row.get("reference", "")))
               for row, predictions in zip(rows, samples, strict=True)]
-    result = {"exact_match": sum(scores) / max(1, len(scores)),
+    result = {"answer_accuracy": sum(scores) / max(1, len(scores)),
               "pass_at_1": pass_at_k(outcomes, 1)}
     for k in pass_k or []:
         result[f"pass_at_{k}"] = pass_at_k(outcomes, k)
-    output = [{**row, "predictions": predictions, "exact_match": score}
+    output = [{**row, "predictions": predictions, "answer_match": score}
               for row, predictions, score in zip(rows, samples, scores, strict=True)]
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)

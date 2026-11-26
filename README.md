@@ -34,6 +34,8 @@ python -m venv .venv
 python -m pip install -e '.[data,training,dev]'
 # Optional symbolic algebra rewards:
 python -m pip install -e '.[math]'
+# Optional standalone model download command:
+python -m pip install -e '.[model-download]'
 ```
 
 Install a PyTorch build matching your CUDA/ROCm/CPU environment by following the
@@ -44,17 +46,30 @@ The application does not install dependencies automatically.
 
 1. Copy `.env.example` to `.env` only if you need a credential-backed optional
    integration. Replace placeholders locally; never commit `.env`.
-2. Set model identifiers and local model directories in `configs/models.yaml`.
-   The expected model roles are DeepSeek-R1-Distill-Qwen-7B for reasoning/math
-   and Qwen2.5-Coder-7B for coding.
-3. Set dataset sources, format, schemas and splits in `configs/datasets.yaml`.
+2. The configured math model is DeepSeek-R1-Distill-Qwen-7B. The coder model
+   is Qwen2.5-Coder-7B-Instruct. Place model files in the configured `models/`
+   directories or cache those exact Hugging Face model IDs before training.
+3. The selected math sources are Nemotron-Math-v2 plus the math domain from
+   Superior-Reasoning Stage 1 for SFT, PRM800K solution preferences for DPO,
+   and Nemotron problem/answer rows for GRPO. Preparation is streamed and
+   capped by `configs/datasets.yaml`.
 4. Tune the workflow-specific batch sizes, sequence limits, learning rates,
    checkpoint locations, LoRA rank and quantization in the respective YAML.
 5. Set export paths and the Ollama name in `configs/export.yaml`.
 
-The YAML files intentionally contain placeholders, not usable user-specific
-paths. Training expects model files to already exist locally. Hugging Face
-dataset IDs are supported only when the user explicitly runs preparation.
+Training uses local model files or existing Hugging Face cache entries; it
+does not download model weights implicitly. Hugging Face dataset loading is
+explicitly started by `prepare-data` and requires network access.
+
+To explicitly download a configured model to its `local_path`, run one of:
+
+```bash
+python -m src.cli download-model --model deepseek_r1_distill_qwen_7b
+python -m src.cli download-model --model qwen2_5_coder_7b
+```
+
+The downloads are large and require Hugging Face network access. If a model
+requires authentication, log in with the Hugging Face CLI before downloading.
 
 ## Dataset preparation
 
@@ -69,13 +84,12 @@ summary.
 ```bash
 python -m src.cli prepare-data --config configs/datasets.yaml --group sft
 python -m src.cli prepare-data --config configs/datasets.yaml --group preferences
-python -m src.cli prepare-data --config configs/datasets.yaml --group evaluation
+python -m src.cli prepare-data --config configs/datasets.yaml --group grpo
 ```
 
-Dataset entries use their configured `weight` values during preparation. The
-seeded weighted sampler is deterministic and samples with replacement; the
-sample count equals the total size of all non-empty input datasets before
-deduplication.
+Dataset entries use their configured weights during deterministic sampling
+without replacement. The held-out math evaluation split is generated from the
+SFT group, with all rows for the same normalized problem kept in one split.
 
 ## SFT / response-level distillation
 
@@ -132,12 +146,32 @@ through `models_to_compare` and writes a comparison JSON report. Extend
 downloaded automatically.
 
 ```bash
-python -m src.cli prepare-data --config configs/datasets.yaml --group evaluation
 python -m src.cli evaluate --config configs/evaluation.yaml
 ```
 
-For fair base/fine-tuned comparison, point the model config at each local model
-in turn and preserve each report under a distinct output directory.
+`configs/evaluation.yaml` compares the base model and each trained adapter on
+the same held-out math prompts. Adapters that have not been trained yet are
+reported as skipped, so evaluation can be run before training and after each
+stage. The math metric extracts final answers and compares numeric answers with
+a small tolerance; other answers use normalized exact match.
+
+## Selected math run
+
+Prepare all three groups once, then run baseline evaluation and the stages in
+order. DPO loads the saved SFT adapter; GRPO loads the saved DPO adapter.
+
+```bash
+python -m src.cli prepare-data --group sft
+python -m src.cli prepare-data --group preferences
+python -m src.cli prepare-data --group grpo
+python -m src.cli evaluate --config configs/evaluation.yaml
+python -m src.cli train-sft --config configs/sft.yaml
+python -m src.cli evaluate --config configs/evaluation.yaml
+python -m src.cli train-dpo --config configs/dpo.yaml
+python -m src.cli evaluate --config configs/evaluation.yaml
+python -m src.cli train-grpo --task math --config configs/grpo_math.yaml
+python -m src.cli evaluate --config configs/evaluation.yaml
+```
 
 ## GGUF export
 
@@ -194,7 +228,7 @@ or code-execution services should be added as separately marked opt-in tests.
 
 ## Commands to run manually
 
-After setting all placeholders and installing compatible dependencies, use the
-workflow commands above. Training, evaluation, export, model creation, and any
-remote dataset access are explicit user actions; this repository does not start
-them automatically.
+After placing model files in the configured directories and installing the
+matching dependencies, use the workflow commands above. Training, evaluation,
+export, model creation, and remote dataset access are explicit user actions;
+the repository does not start them automatically.

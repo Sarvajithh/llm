@@ -4,25 +4,39 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.training.common import load_training_components, seed_everything
+from src.training.common import load_training_components, seed_everything, supported_kwargs
 
 
 class PreferenceTrainer:
     """Select TRL DPO, ORPO or CPO (SimPO loss) from configuration."""
 
-    def train(self, config: dict[str, Any], model_path: str, dataset: Any) -> Any:
+    def train(self, config: dict[str, Any], model_path: str, dataset: Any,
+              eval_dataset: Any | None = None) -> Any:
         from transformers import Trainer, TrainingArguments
         from trl import DPOConfig, DPOTrainer, ORPOConfig, ORPOTrainer
 
         seed_everything(int(config.get("seed", 42)))
         algorithm = config.get("algorithm", "dpo").lower()
         model, tokenizer = load_training_components(model_path, quantization=config.get("quantization"),
-                                                     lora=config.get("lora", {}))
+                                                     lora=config.get("lora", {}),
+                                                     adapter_path=config.get("initial_adapter"))
+        if getattr(tokenizer, "chat_template", None):
+            def format_prompt(row: dict[str, Any]) -> dict[str, str]:
+                rendered = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": row["prompt"]}], tokenize=False,
+                    add_generation_prompt=True)
+                return {"prompt": rendered}
+            dataset = dataset.map(format_prompt)
+            if eval_dataset is not None and len(eval_dataset):
+                eval_dataset = eval_dataset.map(format_prompt)
         common = dict(output_dir=config["output_dir"], seed=int(config.get("seed", 42)),
                       per_device_train_batch_size=int(config.get("per_device_train_batch_size", 1)),
                       gradient_accumulation_steps=int(config.get("gradient_accumulation_steps", 1)),
                       learning_rate=float(config.get("learning_rate", 5e-6)),
-                      num_train_epochs=float(config.get("num_train_epochs", 1)), report_to="none")
+                      num_train_epochs=float(config.get("num_train_epochs", 1)), report_to="none",
+                      bf16=config.get("precision", "bf16") == "bf16",
+                      fp16=config.get("precision", "bf16") == "fp16",
+                      gradient_checkpointing=bool(config.get("gradient_checkpointing", True)))
         if algorithm == "simpo":
             import torch
             import torch.nn.functional as functional
@@ -85,10 +99,16 @@ class PreferenceTrainer:
                 gradient_accumulation_steps=int(config.get("gradient_accumulation_steps", 1)),
                 learning_rate=float(config.get("learning_rate", 5e-6)),
                 num_train_epochs=float(config.get("num_train_epochs", 1)), report_to="none",
+                bf16=config.get("precision", "bf16") == "bf16",
+                fp16=config.get("precision", "bf16") == "fp16",
+                gradient_checkpointing=bool(config.get("gradient_checkpointing", True)),
                 remove_unused_columns=False)
             trainer = SimPOTrainer(model=model, args=args, train_dataset=dataset,
-                                   data_collator=PairCollator())
-            return trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
+                                   eval_dataset=eval_dataset, data_collator=PairCollator())
+            result = trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
+            trainer.save_model(config["output_dir"])
+            tokenizer.save_pretrained(config["output_dir"])
+            return result
         if algorithm == "orpo":
             trainer_cls, args_cls = ORPOTrainer, ORPOConfig
             args = args_cls(**common, beta=float(config.get("beta", 0.1)),
@@ -101,6 +121,11 @@ class PreferenceTrainer:
                             loss_type="sigmoid")
         else:
             raise ValueError("algorithm must be dpo, orpo, or simpo")
-        trainer = trainer_cls(model=model, args=args, train_dataset=dataset,
-                              processing_class=tokenizer)
-        return trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
+        trainer_values = dict(model=model, args=args, train_dataset=dataset,
+                              eval_dataset=eval_dataset, processing_class=tokenizer,
+                              tokenizer=tokenizer)
+        trainer = trainer_cls(**supported_kwargs(trainer_cls, trainer_values))
+        result = trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
+        trainer.save_model(config["output_dir"])
+        tokenizer.save_pretrained(config["output_dir"])
+        return result

@@ -1,11 +1,23 @@
 model: "deepseek_r1_distill_qwen_7b"
 dataset_config: "configs/datasets.yaml"
-dataset_group: "evaluation"
+dataset_group: "sft"
 output_dir: "outputs/evaluation"
-max_new_tokens: 2048
+max_new_tokens: 512
 batch_size: 1
 seed: 42
 metrics: ["pass_at_1", "pass_at_k", "exact_match"]
+metric: "math"
 pass_k: [1, 5]
 benchmark: "custom_jsonl" # custom_jsonl | math | coding
-models_to_compare: ["YOUR_BASE_MODEL_PATH", "YOUR_FINETUNED_MODEL_PATH"]
+models_to_compare:
+  - name: "base"
+    model: "deepseek_r1_distill_qwen_7b"
+  - name: "sft"
+    model: "deepseek_r1_distill_qwen_7b"
+    adapter: "outputs/sft"
+  - name: "dpo"
+    model: "deepseek_r1_distill_qwen_7b"
+    adapter: "outputs/dpo"
+  - name: "grpo"
+    model: "deepseek_r1_distill_qwen_7b"
+    adapter: "outputs/grpo-math"

@@ -22,7 +22,6 @@ def _dataset(config_path: str, group: str, split: str = "train") -> tuple[list[d
     from src.data.prepare import prepare_dataset
 
     config = load_yaml(config_path)
-    validate_training(config, "sft")
     validate_split(config.get("split", {"train": 1.0}))
     path = Path("data/processed") / group
     expected = path / f"{group}_{split}.jsonl"
@@ -30,29 +29,54 @@ def _dataset(config_path: str, group: str, split: str = "train") -> tuple[list[d
         prepare_dataset(config, group, str(path))
     if not expected.is_file():
         raise FileNotFoundError(f"Prepared split is empty or missing: {expected}")
-    return _read_rows(expected), config
+    rows = _read_rows(expected)
+    if not rows and split == "train":
+        raise ValueError(f"Prepared split contains no usable records: {expected}")
+    return rows, config
 
 
 def _model_path(model_key: str) -> str:
     models = load_yaml("configs/models.yaml").get("models", {})
     if model_key not in models:
         raise ValueError(f"Unknown model key {model_key!r}; configure it in configs/models.yaml")
-    model_path = models[model_key].get("local_path")
-    if not model_path or "YOUR_" in model_path:
-        raise ValueError(f"Set a real local_path for {model_key} in configs/models.yaml")
-    return model_path
+    model = models[model_key]
+    local_path = model.get("local_path")
+    if local_path and Path(local_path).exists():
+        return str(local_path)
+    hf_model_id = model.get("hf_model_id")
+    if hf_model_id:
+        return str(hf_model_id)  # loaders are local_files_only; cached weights work offline
+    raise FileNotFoundError(f"Neither local_path nor hf_model_id is configured for {model_key}")
 
 
-def _train_sft(config_path: str) -> None:
+def _download_model(model_key: str) -> None:
+    """Explicitly download one configured Hugging Face model to its local directory."""
+    models = load_yaml("configs/models.yaml").get("models", {})
+    if model_key not in models:
+        raise ValueError(f"Unknown model key {model_key!r}; configure it in configs/models.yaml")
+    model = models[model_key]
+    model_id, local_path = model.get("hf_model_id"), model.get("local_path")
+    if not model_id or not local_path or "YOUR_" in str(model_id) + str(local_path):
+        raise ValueError(f"{model_key} needs hf_model_id and local_path in configs/models.yaml")
+    from huggingface_hub import snapshot_download
+
+    target = Path(local_path)
+    target.mkdir(parents=True, exist_ok=True)
+    snapshot_download(repo_id=model_id, local_dir=str(target))
+    logger.info("Downloaded %s to %s", model_id, target)
+
+
+def _train_sft(config_path: str, dataset_group: str | None = None) -> None:
     from datasets import Dataset
     from src.training.sft import SFTTrainer
 
     config = load_yaml(config_path)
-    validate_training(config, config.get("algorithm", "dpo"))
-    rows, _ = _dataset(config["dataset_config"], config["dataset_group"])
-    # TRL's conversational templates can use plain text prompt/response records.
-    rows = [{"text": f"{r['prompt']}\n{r['response']}"} for r in rows]
-    SFTTrainer().train(config, _model_path(config["model"]), Dataset.from_list(rows))
+    validate_training(config, "sft")
+    group = dataset_group or config["dataset_group"]
+    rows, _ = _dataset(config["dataset_config"], group)
+    validation_rows, _ = _dataset(config["dataset_config"], group, "validation")
+    SFTTrainer().train(config, _model_path(config["model"]), Dataset.from_list(rows),
+                       eval_dataset=Dataset.from_list(validation_rows) if validation_rows else None)
 
 
 def _train_preference(config_path: str) -> None:
@@ -60,9 +84,12 @@ def _train_preference(config_path: str) -> None:
     from src.training.preference import PreferenceTrainer
 
     config = load_yaml(config_path)
-    validate_training(config, "grpo")
+    validate_training(config, config.get("algorithm", "dpo"))
     rows, _ = _dataset(config["dataset_config"], config["dataset_group"])
-    PreferenceTrainer().train(config, _model_path(config["model"]), Dataset.from_list(rows))
+    validation_rows, _ = _dataset(config["dataset_config"], config["dataset_group"], "validation")
+    PreferenceTrainer().train(config, _model_path(config["model"]), Dataset.from_list(rows),
+                              eval_dataset=Dataset.from_list(validation_rows)
+                              if validation_rows else None)
 
 
 def _train_grpo(config_path: str) -> None:
@@ -71,6 +98,7 @@ def _train_grpo(config_path: str) -> None:
     from src.training.grpo import GRPOTrainer
 
     config = load_yaml(config_path)
+    validate_training(config, "grpo")
     rows, _ = _dataset(config["dataset_config"], config["dataset_group"])
     reward_names = config.get("reward", [])
     sandbox = None
@@ -95,26 +123,39 @@ def _evaluate(config_path: str) -> None:
 
     config = load_yaml(config_path)
     dataset_config = load_yaml(config["dataset_config"])
-    specs = dataset_config.get("datasets", {}).get(config["dataset_group"], [])
+    group = config.get("dataset_group", "sft")
+    specs = dataset_config.get("datasets", {}).get(group, [])
     if not specs:
-        raise ValueError("No evaluation dataset configured")
+        raise ValueError(f"No data source configured for evaluation group {group!r}")
     # Evaluation files should be prepared using the standard prepare-data command.
-    data_path = Path("data/processed") / config["dataset_group"] / f"{config['dataset_group']}_test.jsonl"
+    data_path = Path("data/processed") / group / f"{group}_test.jsonl"
     if not data_path.is_file():
         raise FileNotFoundError(f"Run prepare-data first; missing {data_path}")
     model_configs = load_yaml("configs/models.yaml").get("models", {})
     model_paths = config.get("models_to_compare") or [config["model"]]
     comparisons = {}
     for model_ref in model_paths:
-        model_path = model_configs[model_ref]["local_path"] if model_ref in model_configs else model_ref
-        if not model_path or "YOUR_" in model_path:
-            raise ValueError(f"Set a real local path for evaluation model {model_ref!r}")
-        slug = Path(model_path).name or str(model_ref)
-        report = evaluate_jsonl(TransformersGenerator(model_path), str(data_path),
+        if isinstance(model_ref, dict):
+            name = model_ref["name"]
+            base_ref = model_ref.get("model", config["model"])
+            base_path = _model_path(base_ref) if base_ref in model_configs else base_ref
+            adapter = model_ref.get("adapter")
+            if adapter and not Path(adapter).is_dir():
+                comparisons[name] = {"status": "skipped", "reason": f"adapter not found: {adapter}"}
+                logger.info("Skipping %s; train its adapter first (%s)", name, adapter)
+                continue
+        else:
+            name = str(model_ref)
+            base_path = _model_path(model_ref) if model_ref in model_configs else model_ref
+            adapter = None
+        slug = name.replace("/", "_")
+        report = evaluate_jsonl(TransformersGenerator(base_path, adapter_path=adapter,
+                                                       quantization="4bit"), str(data_path),
             str(Path(config["output_dir"]) / slug / "predictions.jsonl"),
             int(config.get("max_new_tokens", 2048)),
-            samples_per_prompt=max(config.get("pass_k", [1])), pass_k=config.get("pass_k", [1]))
-        comparisons[str(model_ref)] = report
+            samples_per_prompt=max(config.get("pass_k", [1])), pass_k=config.get("pass_k", [1]),
+            metric=config.get("metric", "exact"))
+        comparisons[name] = report
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "comparison.json").write_text(json.dumps(comparisons, indent=2), encoding="utf-8")
@@ -147,7 +188,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("prepare-data")
     prepare.add_argument("--config", default="configs/datasets.yaml")
-    prepare.add_argument("--group", choices=["sft", "preferences", "evaluation"], default="sft")
+    prepare.add_argument("--group", choices=["sft", "preferences", "grpo", "evaluation"], default="sft")
+    download = sub.add_parser("download-model", help="download a configured model from Hugging Face")
+    download.add_argument("--model", choices=["deepseek_r1_distill_qwen_7b", "qwen2_5_coder_7b"],
+                          required=True, help="model key from configs/models.yaml")
     for command, default in [("train-sft", "configs/sft.yaml"),
                              ("train-dpo", "configs/dpo.yaml"),
                              ("train-grpo", "configs/grpo_math.yaml"),
@@ -157,6 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
                              ("export-ollama", "configs/export.yaml")]:
         child = sub.add_parser(command)
         child.add_argument("--config", default=None if command == "train-grpo" else default)
+        if command == "train-sft":
+            child.add_argument("--dataset-group", default=None,
+                               help="override dataset group (for separate source/mixture runs)")
         if command == "train-grpo":
             child.add_argument("--task", choices=["math", "code"], default="math")
         if command == "export-ollama":
@@ -176,8 +223,10 @@ def main(argv: list[str] | None = None) -> int:
         validate_split(config.get("split", {"train": 1.0}))
         report = prepare_dataset(config, args.group, str(Path("data/processed") / args.group))
         logger.info("Preprocessing report: %s", report)
+    elif args.command == "download-model":
+        _download_model(args.model)
     elif args.command == "train-sft":
-        _train_sft(args.config)
+        _train_sft(args.config, args.dataset_group)
     elif args.command == "train-dpo":
         _train_preference(args.config)
     elif args.command == "train-grpo":

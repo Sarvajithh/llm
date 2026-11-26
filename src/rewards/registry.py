@@ -3,12 +3,13 @@
 from functools import partial
 
 from src.rewards.constraints import constraint_compliance_reward
-from src.rewards.math import numeric_answer_reward, symbolic_equivalence_reward
+from src.rewards.math import boxed_format_reward, numeric_answer_reward, symbolic_equivalence_reward
 from src.rewards.sandbox import code_compilation_reward, unit_test_reward
 
 REWARDS = {
     "numeric_answer": numeric_answer_reward,
     "symbolic_equivalence": symbolic_equivalence_reward,
+    "boxed_format": boxed_format_reward,
     "constraint_compliance": constraint_compliance_reward,
     "code_compilation": code_compilation_reward,
     "unit_tests": unit_test_reward,

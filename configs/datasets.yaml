@@ -1,27 +1,69 @@
 seed: 42
 datasets:
+  # Small, weighted SFT mixture: math traces from Nemotron plus filtered
+  # Stage 1 reasoning examples from Alibaba. HF sources are streamed and capped.
   sft:
-    - name: "YOUR_SFT_DATASET"
-      source: "YOUR_ORG/YOUR_SFT_DATASET"
-      format: "huggingface"
-      weight: 1.0
-      split: "train"
-      schema: "prompt_response"
+    - name: nemotron_math
+      source: nvidia/Nemotron-Math-v2
+      subset: default
+      format: huggingface
+      split: high_part00
+      schema: nemotron_math
+      max_samples: 15000
+      max_chars: 10000
+      shuffle_buffer: 20000
+      weight: 0.65
+    - name: alibaba_math_stage1
+      source: Alibaba-Apsara/Superior-Reasoning-SFT-gpt-oss-120b
+      subset: stage1
+      format: huggingface
+      split: train
+      schema: alibaba_reasoning
+      where:
+        domain: math
+      max_samples: 10000
+      max_chars: 10000
+      shuffle_buffer: 10000
+      weight: 0.35
+
+  # Human-rated whole-solution pairs from PRM800K, prepared for TRL DPO.
   preferences:
-    - name: "YOUR_PREFERENCE_DATASET"
-      source: "data/raw/preferences.jsonl"
-      format: "jsonl"
+    - name: prm800k_solution_preferences
+      source: tasksource/prm800k_dpo
+      subset: solution
+      format: huggingface
+      split: train
+      schema: prm800k_dpo
+      max_samples: 4120
+      max_chars: 14000
+      shuffle_buffer: 5000
       weight: 1.0
-      schema: "prompt_chosen_rejected"
-  evaluation:
-    - name: "YOUR_EVAL_DATASET"
-      source: "data/eval/custom.jsonl"
-      format: "jsonl"
-      schema: "prompt_reference"
+
+  # Prompt + expected-answer rows for verifier-based GRPO. No teacher solution
+  # is given to the policy at this stage.
+  grpo:
+    - name: nemotron_math_grpo
+      source: nvidia/Nemotron-Math-v2
+      subset: default
+      format: huggingface
+      split: high_part00
+      schema: nemotron_grpo
+      max_samples: 5000
+      max_chars: 8000
+      shuffle_buffer: 10000
+      weight: 1.0
+
+  # Evaluation uses the problem-grouped held-out split of the SFT pool.
+  evaluation: []
+
 filters:
   min_prompt_chars: 1
   min_response_chars: 1
-  max_chars: 100000
+  max_chars: 14000
+max_total_samples_by_group:
+  sft: 12000
+  preferences: 4000
+  grpo: 4000
 split:
   train: 0.9
   validation: 0.05

@@ -2,15 +2,18 @@ model: "deepseek_r1_distill_qwen_7b"
 dataset_config: "configs/datasets.yaml"
 dataset_group: "preferences"
 output_dir: "outputs/dpo"
+initial_adapter: "outputs/sft"
 seed: 42
-max_length: 4096
-max_prompt_length: 2048
+max_length: 2048
+max_prompt_length: 1024
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 16
-learning_rate: 0.000005
+gradient_accumulation_steps: 8
+learning_rate: 0.000002
 num_train_epochs: 1
 beta: 0.1
 loss_type: "sigmoid"
+gradient_checkpointing: true
+precision: "bf16"
 resume_from_checkpoint: null
 quantization: "4bit"
 lora: {enabled: true, r: 16, alpha: 32, dropout: 0.05}

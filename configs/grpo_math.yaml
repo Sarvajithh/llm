@@ -1,16 +1,20 @@
 model: "deepseek_r1_distill_qwen_7b"
 dataset_config: "configs/datasets.yaml"
-dataset_group: "sft"
+dataset_group: "grpo"
 output_dir: "outputs/grpo-math"
+initial_adapter: "outputs/dpo"
 seed: 42
-max_prompt_length: 1024
-max_completion_length: 2048
+max_prompt_length: 768
+max_completion_length: 512
 per_device_train_batch_size: 1
-gradient_accumulation_steps: 16
-num_generations: 4
-learning_rate: 0.000001
+gradient_accumulation_steps: 4
+num_generations: 2
+learning_rate: 0.0000005
 num_train_epochs: 1
+beta: 0.04
+precision: "bf16"
+gradient_checkpointing: true
 resume_from_checkpoint: null
 quantization: "4bit"
 lora: {enabled: true, r: 16, alpha: 32, dropout: 0.05}
-reward: ["numeric_answer", "symbolic_equivalence", "constraint_compliance"]
+reward: ["symbolic_equivalence", "boxed_format"]
