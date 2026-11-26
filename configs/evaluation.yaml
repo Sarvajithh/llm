@@ -1,0 +1,11 @@
+model: "deepseek_r1_distill_qwen_7b"
+dataset_config: "configs/datasets.yaml"
+dataset_group: "evaluation"
+output_dir: "outputs/evaluation"
+max_new_tokens: 2048
+batch_size: 1
+seed: 42
+metrics: ["pass_at_1", "pass_at_k", "exact_match"]
+pass_k: [1, 5]
+benchmark: "custom_jsonl" # custom_jsonl | math | coding
+models_to_compare: ["YOUR_BASE_MODEL_PATH", "YOUR_FINETUNED_MODEL_PATH"]

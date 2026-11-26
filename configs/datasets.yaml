@@ -1,0 +1,28 @@
+seed: 42
+datasets:
+  sft:
+    - name: "YOUR_SFT_DATASET"
+      source: "YOUR_ORG/YOUR_SFT_DATASET"
+      format: "huggingface"
+      weight: 1.0
+      split: "train"
+      schema: "prompt_response"
+  preferences:
+    - name: "YOUR_PREFERENCE_DATASET"
+      source: "data/raw/preferences.jsonl"
+      format: "jsonl"
+      weight: 1.0
+      schema: "prompt_chosen_rejected"
+  evaluation:
+    - name: "YOUR_EVAL_DATASET"
+      source: "data/eval/custom.jsonl"
+      format: "jsonl"
+      schema: "prompt_reference"
+filters:
+  min_prompt_chars: 1
+  min_response_chars: 1
+  max_chars: 100000
+split:
+  train: 0.9
+  validation: 0.05
+  test: 0.05

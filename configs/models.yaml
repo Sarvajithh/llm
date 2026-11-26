@@ -1,0 +1,11 @@
+models:
+  deepseek_r1_distill_qwen_7b:
+    hf_model_id: "YOUR_ORG/DeepSeek-R1-Distill-Qwen-7B"
+    local_path: "models/deepseek-r1-distill-qwen-7b"
+    family: "qwen"
+    task: "reasoning_math_code"
+  qwen2_5_coder_7b:
+    hf_model_id: "YOUR_ORG/Qwen2.5-Coder-7B"
+    local_path: "models/qwen2.5-coder-7b"
+    family: "qwen"
+    task: "coding"

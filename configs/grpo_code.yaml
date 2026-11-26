@@ -1,0 +1,17 @@
+model: "qwen2_5_coder_7b"
+dataset_config: "configs/datasets.yaml"
+dataset_group: "sft"
+output_dir: "outputs/grpo-code"
+seed: 42
+max_prompt_length: 1024
+max_completion_length: 2048
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 16
+num_generations: 4
+learning_rate: 0.000001
+num_train_epochs: 1
+resume_from_checkpoint: null
+quantization: "4bit"
+lora: {enabled: true, r: 16, alpha: 32, dropout: 0.05}
+reward: ["code_compilation", "unit_tests", "constraint_compliance"]
+sandbox: {backend: "YOUR_ISOLATED_SANDBOX_BACKEND", timeout_seconds: 10, network_access: false}

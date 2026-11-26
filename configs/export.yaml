@@ -1,0 +1,10 @@
+base_model_path: "models/YOUR_BASE_MODEL"
+adapter_path: "checkpoints/YOUR_ADAPTER"
+merged_output_path: "outputs/merged/YOUR_MODEL"
+llama_cpp_path: "YOUR_LLAMA_CPP_DIRECTORY"
+gguf_output_path: "outputs/gguf/YOUR_MODEL.gguf"
+quantized_gguf_path: "outputs/gguf/YOUR_MODEL-Q4_K_M.gguf"
+gguf_quantization: "Q4_K_M"
+ollama_modelfile_path: "outputs/ollama/Modelfile"
+ollama_model_name: "YOUR_OLLAMA_MODEL_NAME"
+context_length: 8192
