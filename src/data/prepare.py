@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import random
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -69,16 +68,26 @@ def prepare_dataset(config: dict[str, Any], group: str, output_dir: str) -> dict
         prompt = " ".join(str(row.get("prompt", "")).split()).casefold()
         group_key = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         groups.setdefault(group_key, []).append(row)
-    group_keys = list(groups)
-    random.Random(int(config.get("seed", 42))).shuffle(group_keys)
     split = config.get("split", {"train": 1.0})
-    boundaries = [int(len(group_keys) * split.get("train", 0)),
-                  int(len(group_keys) * (split.get("train", 0) + split.get("validation", 0)))]
-    train_keys = set(group_keys[:boundaries[0]])
-    validation_keys = set(group_keys[boundaries[0]:boundaries[1]])
     partitions = {"train": [], "validation": [], "test": []}
+    global_assignment_exclusions = 0
+    train_end = float(split.get("train", 0))
+    validation_end = train_end + float(split.get("validation", 0))
+    disjoint_train_groups = set(config.get("disjoint_train_groups", []))
     for key, rows in groups.items():
-        target = "train" if key in train_keys else "validation" if key in validation_keys else "test"
+        # Prompt hashes provide a stable assignment across independently prepared
+        # groups, so a prompt cannot land in one group's train and another's test.
+        bucket = int(key[:16], 16) / 2**64
+        target = "train" if bucket < train_end else "validation" if bucket < validation_end else "test"
+        if target == "train" and group in disjoint_train_groups:
+            # Give overlapping train prompts a deterministic owner, preventing
+            # the same problem from appearing in multiple configured train groups.
+            owner = int(hashlib.sha256(f"{key}:train-owner".encode()).hexdigest()[:16], 16) / 2**64
+            ordered_groups = sorted(disjoint_train_groups)
+            owner_group = ordered_groups[min(int(owner * len(ordered_groups)), len(ordered_groups) - 1)]
+            if group != owner_group:
+                global_assignment_exclusions += len(rows)
+                continue
         partitions[target].extend(rows)
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -88,10 +97,15 @@ def prepare_dataset(config: dict[str, Any], group: str, output_dir: str) -> dict
     prompt_lengths = [len(str(row.get("prompt", ""))) for row in unique]
     response_lengths = [len(str(row.get(key, ""))) for row in unique
                         for key in ("response", "chosen", "reference") if key in row]
-    report = {"group": group, "input_records": raw_count, "sampled_records": len(records),
+    config_signature = hashlib.sha256(json.dumps(config, sort_keys=True, ensure_ascii=False,
+                                                 default=str).encode("utf-8")).hexdigest()
+    report = {"group": group, "split_strategy": "global_prompt_hash_v1",
+              "config_signature": config_signature,
+              "input_records": raw_count, "sampled_records": len(records),
               "unique_records": len(unique), "dropped_invalid": dropped_invalid,
               "dropped_by_filter": dropped_filter, "duplicates": duplicates,
               "unique_problem_groups": len(groups),
+              "excluded_by_global_prompt_assignment": global_assignment_exclusions,
               "statistics": {"mean_prompt_chars": round(sum(prompt_lengths) / max(1, len(prompt_lengths)), 2),
                              "max_prompt_chars": max(prompt_lengths, default=0),
                              "mean_response_chars": round(sum(response_lengths) / max(1, len(response_lengths)), 2),

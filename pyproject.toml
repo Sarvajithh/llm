@@ -11,7 +11,8 @@ requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0"]
 
 [project.optional-dependencies]
-training = ["torch>=2.2", "transformers>=4.45", "trl>=0.12", "peft>=0.13", "accelerate>=1.0", "bitsandbytes>=0.44"]
+training = ["torch>=2.2", "transformers>=4.45", "trl>=0.22.1", "peft>=0.13", "accelerate>=1.0", "bitsandbytes>=0.44"]
+performance = ["liger-kernel>=0.5"]
 data = ["datasets>=3.0", "pyarrow>=17.0"]
 model-download = ["huggingface-hub>=0.25"]
 math = ["sympy>=1.13"]

@@ -34,6 +34,8 @@ python -m venv .venv
 python -m pip install -e '.[data,training,dev]'
 # Optional symbolic algebra rewards:
 python -m pip install -e '.[math]'
+# Optional Liger fused kernels:
+python -m pip install -e '.[performance]'
 # Optional standalone model download command:
 python -m pip install -e '.[model-download]'
 ```
@@ -41,6 +43,11 @@ python -m pip install -e '.[model-download]'
 Install a PyTorch build matching your CUDA/ROCm/CPU environment by following the
 official PyTorch instructions. `bitsandbytes` support depends on the platform.
 The application does not install dependencies automatically.
+The CLI sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` before loading
+PyTorch unless you already set that variable yourself. `sdpa` is the configured
+attention backend; install `performance` separately for the optional Liger
+kernels. If Liger cannot be imported, training logs a warning and continues
+with native kernels.
 
 ## Configuration
 
@@ -88,8 +95,11 @@ python -m src.cli prepare-data --config configs/datasets.yaml --group grpo
 ```
 
 Dataset entries use their configured weights during deterministic sampling
-without replacement. The held-out math evaluation split is generated from the
-SFT group, with all rows for the same normalized problem kept in one split.
+without replacement. Prompt hashes assign a problem to the same split across
+the independently prepared dataset groups. `disjoint_train_groups` also gives
+overlapping training prompts a single owner (SFT or GRPO), preventing a shared
+prompt from training both stages. Check each group's report for rows excluded
+by that ownership rule.
 
 ## SFT / response-level distillation
 
@@ -102,7 +112,12 @@ python -m src.cli train-sft --config configs/sft.yaml
 
 SFT uses TRL and PEFT; `quantization: "4bit"` prepares a QLoRA run, while
 `lora.enabled: false` selects full fine-tuning. Set `resume_from_checkpoint`
-to an existing checkpoint path to resume.
+to an existing checkpoint path to resume. The math config enables sequence
+packing, SDPA attention, zero LoRA dropout, paged 8-bit AdamW, and requests
+Liger kernels. If Liger is not installed, training warns and uses native
+kernels. A callback logs allocated and reserved CUDA peak memory after 20 steps.
+PiSSA is intentionally not enabled: this pipeline initializes LoRA on a 4-bit
+base, while the selected PiSSA setup requires a fresh unquantized initialization.
 
 ## DPO, ORPO and SimPO
 
@@ -113,7 +128,12 @@ Preference rows use `prompt`, `chosen` and `rejected` fields. Select
 python -m src.cli train-dpo --config configs/dpo.yaml
 ```
 
-The preference module delegates DPO and ORPO to their TRL trainers. SimPO uses
+The preference module delegates DPO and ORPO to their TRL trainers. The DPO
+configuration passes `ref_model=None`, so TRL can use the PEFT adapter-disable
+reference path without a separately loaded reference model. It uses 512-token
+prompts and 1536-token total sequences. Reference log-probability precomputation
+is off by default and can be enabled if needed.
+SimPO uses
 a small custom Transformers trainer with a reference-free, length-normalized
 chosen-versus-rejected log-probability objective and configurable target margin
 (`gamma_beta_ratio`). Pin compatible framework versions for reproducibility.
@@ -132,7 +152,11 @@ python -m src.cli train-grpo --task math --config configs/grpo_math.yaml
 python -m src.cli train-grpo --task code --config configs/grpo_code.yaml
 ```
 
-For math GRPO, make sure source records include the answer fields expected by
+Math GRPO uses the Dr. GRPO loss, beta zero (no reference KL term), two
+generations per prompt, 512-token prompt/completion caps, and masking for
+truncated completions. Rollouts use Transformers generation with cache enabled;
+training uses gradient checkpointing. vLLM is not enabled. For math GRPO, make
+sure source records include the answer fields expected by
 the selected reward. For code GRPO, map unit tests and any sandbox context into
 the reward call's batch fields. The generic reward registry is a starting point;
 adapt the record/reward field mapping to your dataset schema.
@@ -153,7 +177,8 @@ python -m src.cli evaluate --config configs/evaluation.yaml
 the same held-out math prompts. Adapters that have not been trained yet are
 reported as skipped, so evaluation can be run before training and after each
 stage. The math metric extracts final answers and compares numeric answers with
-a small tolerance; other answers use normalized exact match.
+a small tolerance; other answers use normalized exact match. Pass@1 is greedy;
+pass@k uses independent samples at temperature 0.6 and top-p 0.95.
 
 ## Selected math run
 

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.training.common import load_training_components, seed_everything, supported_kwargs, training_arguments
+from src.training.common import (load_training_components, memory_monitor_callbacks,
+                                seed_everything, supported_kwargs, training_arguments)
 
 
 class SFTTrainer:
@@ -12,12 +13,14 @@ class SFTTrainer:
 
     def train(self, config: dict[str, Any], model_path: str, dataset: Any,
               eval_dataset: Any | None = None) -> Any:
-        from trl import SFTTrainer as TRLSFTTrainer
+        from trl import SFTConfig, SFTTrainer as TRLSFTTrainer
 
         seed_everything(int(config.get("seed", 42)))
         model, tokenizer = load_training_components(model_path, quantization=config.get("quantization"),
                                                      lora=config.get("lora", {}),
-                                                     adapter_path=config.get("initial_adapter"))
+                                                     adapter_path=config.get("initial_adapter"),
+                                                     attention_implementation=config.get(
+                                                         "attention_implementation", "sdpa"))
         def format_rows(rows: Any) -> Any:
             def render(row: dict[str, str]) -> dict[str, str]:
                 prompt, response = row["prompt"], row["response"]
@@ -33,8 +36,13 @@ class SFTTrainer:
 
         train_dataset = format_rows(dataset)
         validation = format_rows(eval_dataset) if eval_dataset is not None and len(eval_dataset) else None
-        trainer_values = dict(model=model, args=training_arguments(config, config["output_dir"]),
+        trainer_values = dict(model=model, args=training_arguments(
+                                  config, config["output_dir"], SFTConfig,
+                                  extra={"max_length": int(config.get("max_seq_length", 2048)),
+                                         "dataset_text_field": "text",
+                                         "packing": bool(config.get("packing", True))}),
                               train_dataset=train_dataset, eval_dataset=validation,
+                              callbacks=memory_monitor_callbacks(config),
                               processing_class=tokenizer, tokenizer=tokenizer,
                               max_seq_length=int(config.get("max_seq_length", 2048)),
                               max_length=int(config.get("max_seq_length", 2048)),

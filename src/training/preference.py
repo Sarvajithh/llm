@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.training.common import load_training_components, seed_everything, supported_kwargs
+from src.training.common import (load_training_components, memory_monitor_callbacks,
+                                 seed_everything, supported_kwargs, training_arguments)
 
 
 class PreferenceTrainer:
@@ -19,7 +20,9 @@ class PreferenceTrainer:
         algorithm = config.get("algorithm", "dpo").lower()
         model, tokenizer = load_training_components(model_path, quantization=config.get("quantization"),
                                                      lora=config.get("lora", {}),
-                                                     adapter_path=config.get("initial_adapter"))
+                                                     adapter_path=config.get("initial_adapter"),
+                                                     attention_implementation=config.get(
+                                                         "attention_implementation", "sdpa"))
         if getattr(tokenizer, "chat_template", None):
             def format_prompt(row: dict[str, Any]) -> dict[str, str]:
                 rendered = tokenizer.apply_chat_template(
@@ -104,6 +107,7 @@ class PreferenceTrainer:
                 gradient_checkpointing=bool(config.get("gradient_checkpointing", True)),
                 remove_unused_columns=False)
             trainer = SimPOTrainer(model=model, args=args, train_dataset=dataset,
+                                   callbacks=memory_monitor_callbacks(config),
                                    eval_dataset=eval_dataset, data_collator=PairCollator())
             result = trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
             trainer.save_model(config["output_dir"])
@@ -111,19 +115,24 @@ class PreferenceTrainer:
             return result
         if algorithm == "orpo":
             trainer_cls, args_cls = ORPOTrainer, ORPOConfig
-            args = args_cls(**common, beta=float(config.get("beta", 0.1)),
-                            max_length=int(config.get("max_length", 4096)))
+            args = training_arguments(config, config["output_dir"], args_cls,
+                extra={**common, "beta": float(config.get("beta", 0.1)),
+                       "max_length": int(config.get("max_length", 1536))})
         elif algorithm == "dpo":
             trainer_cls, args_cls = DPOTrainer, DPOConfig
-            args = args_cls(**common, beta=float(config.get("beta", 0.1)),
-                            max_length=int(config.get("max_length", 4096)),
-                            max_prompt_length=int(config.get("max_prompt_length", 2048)),
-                            loss_type="sigmoid")
+            args = training_arguments(config, config["output_dir"], args_cls,
+                extra={**common, "beta": float(config.get("beta", 0.1)),
+                       "max_length": int(config.get("max_length", 1536)),
+                       "max_prompt_length": int(config.get("max_prompt_length", 512)),
+                       "loss_type": "sigmoid",
+                       "precompute_ref_log_probs": bool(
+                           config.get("precompute_ref_log_probs", False))})
         else:
             raise ValueError("algorithm must be dpo, orpo, or simpo")
         trainer_values = dict(model=model, args=args, train_dataset=dataset,
                               eval_dataset=eval_dataset, processing_class=tokenizer,
-                              tokenizer=tokenizer)
+                              tokenizer=tokenizer, ref_model=None,
+                              callbacks=memory_monitor_callbacks(config))
         trainer = trainer_cls(**supported_kwargs(trainer_cls, trainer_values))
         result = trainer.train(resume_from_checkpoint=config.get("resume_from_checkpoint"))
         trainer.save_model(config["output_dir"])

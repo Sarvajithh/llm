@@ -13,7 +13,8 @@ from src.rewards.math import extract_final_answer, extract_numeric_answer
 class Generator(Protocol):
     """Minimal interface implemented by a local model adapter."""
 
-    def generate(self, prompts: list[str], max_new_tokens: int) -> list[str]:
+    def generate(self, prompts: list[str], max_new_tokens: int, *, do_sample: bool = False,
+                 temperature: float = 0.6, top_p: float = 0.95) -> list[str]:
         """Generate one completion per prompt."""
         ...
 
@@ -21,7 +22,8 @@ class Generator(Protocol):
 def evaluate_jsonl(generator: Generator, dataset_path: str, output_path: str,
                    max_new_tokens: int = 2048, samples_per_prompt: int = 1,
                    pass_k: list[int] | None = None,
-                   metric: str = "exact") -> dict[str, float]:
+                   metric: str = "exact", seed: int = 42,
+                   temperature: float = 0.6, top_p: float = 0.95) -> dict[str, float]:
     """Evaluate sampled completions per record and write per-example predictions."""
     rows = [json.loads(line) for line in Path(dataset_path).read_text(encoding="utf-8").splitlines()
             if line.strip()]
@@ -33,9 +35,20 @@ def evaluate_jsonl(generator: Generator, dataset_path: str, output_path: str,
     prompts = [row["prompt"] for row in rows]
     if samples_per_prompt <= 0:
         raise ValueError("samples_per_prompt must be positive")
+    try:
+        import torch
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    except ImportError:
+        pass
+    greedy_predictions = generator.generate(prompts, max_new_tokens, do_sample=False)
+    if len(greedy_predictions) != len(rows):
+        raise ValueError("Generator returned a different number of completions than prompts")
     samples = [[] for _ in rows]
     for _ in range(samples_per_prompt):
-        predictions = generator.generate(prompts, max_new_tokens)
+        predictions = generator.generate(prompts, max_new_tokens, do_sample=True,
+                                         temperature=temperature, top_p=top_p)
         if len(predictions) != len(rows):
             raise ValueError("Generator returned a different number of completions than prompts")
         for index, prediction in enumerate(predictions):
@@ -55,14 +68,15 @@ def evaluate_jsonl(generator: Generator, dataset_path: str, output_path: str,
 
     outcomes = [[bool(score(prediction, str(row.get("reference", ""))))
                  for prediction in predictions] for row, predictions in zip(rows, samples, strict=True)]
-    scores = [score(predictions[0], str(row.get("reference", "")))
-              for row, predictions in zip(rows, samples, strict=True)]
-    result = {"answer_accuracy": sum(scores) / max(1, len(scores)),
-              "pass_at_1": pass_at_k(outcomes, 1)}
+    greedy_scores = [score(prediction, str(row.get("reference", "")))
+                     for row, prediction in zip(rows, greedy_predictions, strict=True)]
+    result = {"answer_accuracy": sum(greedy_scores) / max(1, len(greedy_scores)),
+              "pass_at_1": sum(greedy_scores) / max(1, len(greedy_scores))}
     for k in pass_k or []:
-        result[f"pass_at_{k}"] = pass_at_k(outcomes, k)
-    output = [{**row, "predictions": predictions, "answer_match": score}
-              for row, predictions, score in zip(rows, samples, scores, strict=True)]
+        result[f"pass_at_{k}"] = (result["pass_at_1"] if k == 1 else pass_at_k(outcomes, k))
+    output = [{**row, "greedy_prediction": greedy, "sampled_predictions": predictions,
+               "answer_match": score(greedy, str(row.get("reference", "")))}
+              for row, greedy, predictions in zip(rows, greedy_predictions, samples, strict=True)]
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in output), encoding="utf-8")

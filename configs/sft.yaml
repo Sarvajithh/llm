@@ -4,6 +4,12 @@ dataset_group: "sft"
 output_dir: "outputs/sft"
 seed: 42
 max_seq_length: 2048
+attention_implementation: "sdpa"
+packing: true
+use_liger_kernel: true
+optim: "paged_adamw_8bit"
+memory_check_steps: 20
+memory_budget_gb: 7.2
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
 learning_rate: 0.00001
@@ -20,5 +26,5 @@ lora:
   enabled: true
   r: 16
   alpha: 32
-  dropout: 0.05
+  dropout: 0.0
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]

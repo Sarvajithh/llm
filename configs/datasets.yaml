@@ -68,3 +68,6 @@ split:
   train: 0.9
   validation: 0.05
   test: 0.05
+# Prompts are assigned to splits by a stable global hash. Among train prompts,
+# SFT and GRPO receive disjoint prompt ownership to avoid cross-stage overlap.
+disjoint_train_groups: [sft, grpo]

@@ -21,7 +21,8 @@ class TransformersGenerator:
                                                    local_files_only=True)
         self.model.eval()
 
-    def generate(self, prompts: list[str], max_new_tokens: int) -> list[str]:
+    def generate(self, prompts: list[str], max_new_tokens: int, *, do_sample: bool = False,
+                 temperature: float = 0.6, top_p: float = 0.95) -> list[str]:
         import torch
         output: list[str] = []
         for prompt in prompts:
@@ -31,8 +32,11 @@ class TransformersGenerator:
                     add_generation_prompt=True)
             inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
             with torch.inference_mode():
-                tokens = self.model.generate(**inputs, max_new_tokens=max_new_tokens,
-                    do_sample=False, pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id)
+                generation = {"max_new_tokens": max_new_tokens, "do_sample": do_sample,
+                              "pad_token_id": self.tokenizer.pad_token_id or self.tokenizer.eos_token_id}
+                if do_sample:
+                    generation.update(temperature=temperature, top_p=top_p)
+                tokens = self.model.generate(**inputs, **generation)
             output.append(self.tokenizer.decode(tokens[0][inputs["input_ids"].shape[1]:],
                                                 skip_special_tokens=True))
         return output

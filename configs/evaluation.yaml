@@ -5,9 +5,11 @@ output_dir: "outputs/evaluation"
 max_new_tokens: 512
 batch_size: 1
 seed: 42
-metrics: ["pass_at_1", "pass_at_k", "exact_match"]
+metrics: ["answer_accuracy", "pass_at_1", "pass_at_5"]
 metric: "math"
 pass_k: [1, 5]
+temperature: 0.6
+top_p: 0.95
 benchmark: "custom_jsonl" # custom_jsonl | math | coding
 models_to_compare:
   - name: "base"

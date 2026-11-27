@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
+
+# Set before datasets/Transformers can import PyTorch and initialize CUDA.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from src.config.loader import load_yaml, validate_export, validate_split, validate_training
 
@@ -25,7 +30,20 @@ def _dataset(config_path: str, group: str, split: str = "train") -> tuple[list[d
     validate_split(config.get("split", {"train": 1.0}))
     path = Path("data/processed") / group
     expected = path / f"{group}_{split}.jsonl"
-    if not expected.is_file():
+    report_path = path / f"{group}_report.json"
+    prepared_signature = None
+    if report_path.is_file():
+        try:
+            old_report = json.loads(report_path.read_text(encoding="utf-8"))
+            prepared_signature = (old_report.get("config_signature")
+                                  if isinstance(old_report, dict) else None)
+        except (json.JSONDecodeError, OSError):
+            pass
+    current_signature = hashlib.sha256(
+        json.dumps(config, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+    ).hexdigest()
+    if not expected.is_file() or prepared_signature != current_signature:
+        logger.info("Preparing or refreshing %s data to match the current global split config", group)
         prepare_dataset(config, group, str(path))
     if not expected.is_file():
         raise FileNotFoundError(f"Prepared split is empty or missing: {expected}")
@@ -154,7 +172,9 @@ def _evaluate(config_path: str) -> None:
             str(Path(config["output_dir"]) / slug / "predictions.jsonl"),
             int(config.get("max_new_tokens", 2048)),
             samples_per_prompt=max(config.get("pass_k", [1])), pass_k=config.get("pass_k", [1]),
-            metric=config.get("metric", "exact"))
+            metric=config.get("metric", "exact"), seed=int(config.get("seed", 42)),
+            temperature=float(config.get("temperature", 0.6)),
+            top_p=float(config.get("top_p", 0.95)))
         comparisons[name] = report
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
